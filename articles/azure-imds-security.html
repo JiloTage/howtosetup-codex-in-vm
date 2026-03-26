@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Azure IMDSとセキュリティ - Auto-Wiki</title>
+  <link rel="stylesheet" href="../assets/css/wiki.css">
+</head>
+<body>
+<div class="wiki-wrapper">
+  <header class="wiki-header">
+    <a href="../index.html" class="site-title">Auto-Wiki</a>
+    <nav>
+      <a href="../index.html">トップ</a>
+      <a href="../index.html#article-list">記事一覧</a>
+      <a href="../index.html#graph">サイトグラフ</a>
+    </nav>
+  </header>
+
+  <div class="breadcrumb">
+    <a href="../index.html">Auto-Wiki</a> &gt; Azure IMDSとセキュリティ
+  </div>
+
+  <div class="wiki-content">
+    <main class="wiki-main">
+      <h1 class="article-title">Azure IMDSとセキュリティ</h1>
+      <div class="article-meta">最終更新: 2026-03-26</div>
+      <div class="article-summary">Azure Instance Metadata Service（IMDS）の仕組みとセキュリティ上の考慮事項を解説し、SSRF攻撃の防止策やトークンキャッシュの注意点、マネージドID連携におけるベストプラクティスを示す。</div>
+
+      <p><b>Azure IMDSとセキュリティ</b>は、Azure仮想マシン上で動作するInstance Metadata Service（IMDS）のアーキテクチャと、それに関連するセキュリティリスクおよび対策を包括的に扱う記事である。IMDSは<a href="azure-managed-identity.html">Azure マネージドID</a>によるトークン取得の基盤であり、<a href="codex-azure-vm-offline-setup.html">オフライン環境でのCodex導入</a>においても中核的な役割を果たす。IMDSの正しい理解と適切なセキュリティ対策は、Azure VM上でのあらゆるサービス運用において不可欠である。</p>
+
+      <h2 id="what-is-imds">IMDSとは</h2>
+
+      <p>Azure Instance Metadata Service（IMDS）は、Azure仮想マシンの内部からのみアクセス可能なREST APIエンドポイントである。VMの構成情報、ネットワーク情報、スケジュールされたイベント、そして<a href="azure-managed-identity.html">マネージドID</a>のOAuthトークンを取得するために使用される。</p>
+
+      <h3 id="imds-endpoint">169.254.169.254 エンドポイント</h3>
+
+      <p>IMDSは、リンクローカルアドレス <code>169.254.169.254</code> で公開されている。このアドレスはAzureのハイパーバイザー層で処理され、インターネットに到達することはない。VM内部からのみアクセス可能であり、外部ネットワークからの到達は物理的に不可能な設計となっている。</p>
+
+      <pre><code># IMDSへの基本アクセス例
+curl -H "Metadata: true" \
+  "http://169.254.169.254/metadata/instance?api-version=2021-02-01"</code></pre>
+
+      <p>主なエンドポイントは以下の通りである。</p>
+      <ul>
+        <li><code>/metadata/instance</code> — VM構成情報（リージョン、VMサイズ、タグ等）</li>
+        <li><code>/metadata/identity/oauth2/token</code> — マネージドIDによるOAuthトークン取得</li>
+        <li><code>/metadata/scheduledevents</code> — メンテナンスイベント通知</li>
+        <li><code>/metadata/attested/document</code> — VM認証ドキュメント</li>
+      </ul>
+
+      <h3 id="metadata-header">Metadata: true ヘッダーの必要性</h3>
+
+      <p>IMDSへのすべてのリクエストには、HTTPヘッダー <code>Metadata: true</code> を付与する必要がある。このヘッダーが欠落したリクエストはIMDSにより拒否される。これは<a href="ssrf-prevention.html">SSRF（Server-Side Request Forgery）攻撃</a>を防止するための重要なセキュリティメカニズムである。</p>
+
+      <p>ウェブアプリケーションの脆弱性を通じて攻撃者がサーバーから任意のHTTPリクエストを発行させた場合でも、通常のブラウザやHTTPクライアントライブラリは <code>Metadata: true</code> ヘッダーを自動的に付加しない。このため、SSRF経由でのIMDSアクセスが困難になる。ただし、これは多層防御の一環であり、単独では完全な防御とはならない。</p>
+
+      <h2 id="imds-architecture">IMDSアーキテクチャ</h2>
+
+      <p>以下の図は、Azure VM内部からIMDSへのアクセスフローと、外部からの不正アクセスがブロックされる仕組みを示す。</p>
+
+      <div class="diagram-container">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 480" width="820" height="480">
+          <defs>
+            <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#36c" />
+            </marker>
+            <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#2a7e3b" />
+            </marker>
+            <marker id="arrow-red" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#c33" />
+            </marker>
+          </defs>
+
+          <!-- Azure VM ボックス -->
+          <rect x="30" y="20" width="340" height="200" rx="10" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="200" y="48" text-anchor="middle" font-family="sans-serif" font-size="15" font-weight="bold" fill="#202122">Azure VM</text>
+
+          <!-- アプリケーション -->
+          <rect x="55" y="65" width="130" height="55" rx="6" fill="#eef3ff" stroke="#36c" stroke-width="1.5"/>
+          <text x="120" y="90" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#202122">アプリケーション</text>
+          <text x="120" y="108" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">（Codex CLI等）</text>
+
+          <!-- curl/SDK -->
+          <rect x="215" y="65" width="130" height="55" rx="6" fill="#eef3ff" stroke="#36c" stroke-width="1.5"/>
+          <text x="280" y="90" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#202122">curl / Azure SDK</text>
+          <text x="280" y="108" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">Metadata: true</text>
+
+          <!-- Arrow: App → curl -->
+          <line x1="185" y1="92" x2="215" y2="92" stroke="#36c" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+
+          <!-- ハイパーバイザー層 -->
+          <rect x="30" y="260" width="340" height="80" rx="10" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="200" y="290" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202122">Azure ハイパーバイザー</text>
+
+          <!-- IMDS -->
+          <rect x="120" y="280" width="160" height="45" rx="6" fill="#eef3ff" stroke="#36c" stroke-width="1.5"/>
+          <text x="200" y="300" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#202122">IMDS</text>
+          <text x="200" y="316" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">169.254.169.254</text>
+
+          <!-- Arrow: VM → IMDS (正常) -->
+          <line x1="280" y1="120" x2="280" y2="145" stroke="#2a7e3b" stroke-width="2"/>
+          <line x1="280" y1="145" x2="200" y2="145" stroke="#2a7e3b" stroke-width="1.5"/>
+          <line x1="200" y1="145" x2="200" y2="280" stroke="#2a7e3b" stroke-width="2" marker-end="url(#arrow-green)"/>
+          <text x="130" y="185" font-family="sans-serif" font-size="10" fill="#2a7e3b">リンクローカル通信</text>
+          <text x="130" y="200" font-family="sans-serif" font-size="10" fill="#2a7e3b">（ヘッダー検証OK）</text>
+
+          <!-- Azure AD / Entra ID -->
+          <rect x="440" y="260" width="180" height="80" rx="10" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="530" y="290" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#202122">Microsoft Entra ID</text>
+          <text x="530" y="310" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">（旧 Azure AD）</text>
+          <text x="530" y="326" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">OAuthトークン発行</text>
+
+          <!-- Arrow: IMDS → Entra ID -->
+          <line x1="370" y1="300" x2="440" y2="300" stroke="#36c" stroke-width="2" marker-end="url(#arrow-blue)"/>
+          <text x="405" y="290" text-anchor="middle" font-family="sans-serif" font-size="9" fill="#36c">認証</text>
+
+          <!-- Azure OpenAI -->
+          <rect x="440" y="380" width="180" height="60" rx="10" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="530" y="407" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#202122">Azure OpenAI</text>
+          <text x="530" y="425" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">API エンドポイント</text>
+
+          <!-- Arrow: token → App → OpenAI -->
+          <line x1="200" y1="280" x2="200" y2="170" stroke="#2a7e3b" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-green)"/>
+          <text x="245" y="232" font-family="sans-serif" font-size="9" fill="#2a7e3b">トークン返却</text>
+
+          <line x1="120" y1="120" x2="120" y2="410" stroke="#36c" stroke-width="1.5"/>
+          <line x1="120" y1="410" x2="440" y2="410" stroke="#36c" stroke-width="2" marker-end="url(#arrow-blue)"/>
+          <text x="280" y="400" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#36c">Bearer トークンで API 呼び出し</text>
+
+          <!-- 外部攻撃者 -->
+          <rect x="640" y="20" width="160" height="70" rx="10" fill="#fff0f0" stroke="#c33" stroke-width="2"/>
+          <text x="720" y="50" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="bold" fill="#c33">外部攻撃者</text>
+          <text x="720" y="70" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#c33">SSRF試行</text>
+
+          <!-- Arrow: 攻撃者 → IMDS (ブロック) -->
+          <line x1="640" y1="70" x2="370" y2="285" stroke="#c33" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#arrow-red)"/>
+
+          <!-- ブロックマーク -->
+          <circle cx="480" cy="190" r="18" fill="#fff0f0" stroke="#c33" stroke-width="2"/>
+          <text x="480" y="196" text-anchor="middle" font-family="sans-serif" font-size="18" font-weight="bold" fill="#c33">X</text>
+          <text x="520" y="175" font-family="sans-serif" font-size="10" fill="#c33">Metadata ヘッダー</text>
+          <text x="520" y="190" font-family="sans-serif" font-size="10" fill="#c33">なし → 拒否</text>
+
+          <!-- 凡例 -->
+          <rect x="640" y="130" width="160" height="100" rx="6" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="1"/>
+          <text x="720" y="150" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="bold" fill="#202122">凡例</text>
+          <line x1="655" y1="165" x2="685" y2="165" stroke="#2a7e3b" stroke-width="2"/>
+          <text x="695" y="170" font-family="sans-serif" font-size="10" fill="#202122">正常フロー</text>
+          <line x1="655" y1="185" x2="685" y2="185" stroke="#36c" stroke-width="2"/>
+          <text x="695" y="190" font-family="sans-serif" font-size="10" fill="#202122">API通信</text>
+          <line x1="655" y1="205" x2="685" y2="205" stroke="#c33" stroke-width="2" stroke-dasharray="6,4"/>
+          <text x="695" y="210" font-family="sans-serif" font-size="10" fill="#202122">ブロック</text>
+        </svg>
+        <div class="diagram-caption">図1: Azure IMDS アーキテクチャとSSRF攻撃防止の仕組み</div>
+      </div>
+
+      <h2 id="ssrf-attack-vectors">SSRF攻撃ベクトルと防止策</h2>
+
+      <p>SSRF（Server-Side Request Forgery）は、攻撃者がサーバーサイドのアプリケーションを悪用して、本来アクセスできない内部リソースへリクエストを送信させる攻撃手法である。クラウド環境におけるIMDSは、SSRFの主要なターゲットとなる。</p>
+
+      <h3 id="ssrf-scenarios">代表的な攻撃シナリオ</h3>
+
+      <p>以下のようなシナリオでIMDSが標的となり得る。</p>
+
+      <ol>
+        <li><strong>Webアプリケーション経由</strong>: URLパラメータを受け取るWebアプリに <code>http://169.254.169.254/...</code> を注入し、IMDSからトークンを窃取する</li>
+        <li><strong>HTTPリダイレクト悪用</strong>: 外部URLへのリクエストを途中でIMDSにリダイレクトさせる</li>
+        <li><strong>DNSリバインディング</strong>: DNS応答を操作し、正規ドメインの解決先をIMDSのIPアドレスに変更する</li>
+        <li><strong>ヘッダーインジェクション</strong>: HTTPヘッダーインジェクションにより <code>Metadata: true</code> ヘッダーを付加させる</li>
+      </ol>
+
+      <h3 id="ssrf-prevention">防止策</h3>
+
+      <p><a href="ssrf-prevention.html">SSRF対策</a>としては以下の多層防御が重要である。</p>
+
+      <ul>
+        <li><strong>ネットワークレベルの制御</strong>: <a href="azure-network-security.html">Azure NSG（ネットワークセキュリティグループ）</a>を活用し、VM内の不要なアウトバウンド通信を制限する</li>
+        <li><strong>アプリケーションレベルの対策</strong>: ユーザー入力のURL検証を厳格に行い、リンクローカルアドレス（169.254.0.0/16）へのリクエストをブロックする</li>
+        <li><strong>WAF（Web Application Firewall）</strong>: Azure Application GatewayのWAF機能でSSRFパターンを検知・遮断する</li>
+        <li><strong>最小権限の原則</strong>: マネージドIDに付与するロールを必要最小限に絞る（例: 「Cognitive Services OpenAI User」のみ）</li>
+        <li><strong>IMDSv2の活用</strong>: セッションベースのトークンを使用するIMDSv2を有効化し、単純なGETリクエストでのトークン取得を防止する</li>
+      </ul>
+
+      <h2 id="token-caching">トークンキャッシュの考慮事項</h2>
+
+      <p>IMDSから取得したOAuthトークンには有効期限（通常は数時間）が設定されている。トークンの取り扱いにおいて以下の点に注意する必要がある。</p>
+
+      <h3 id="caching-benefits">キャッシュのメリット</h3>
+      <ul>
+        <li>IMDSへの頻繁なリクエストを避け、レートリミットの回避およびレイテンシの低減が可能</li>
+        <li>トークン取得のオーバーヘッドを削減し、アプリケーションの応答性が向上する</li>
+      </ul>
+
+      <h3 id="caching-risks">キャッシュのリスク</h3>
+      <ul>
+        <li><strong>メモリ上のトークン露出</strong>: プロセスメモリダンプやコアダンプからトークンが漏洩するリスクがある。環境変数に設定したトークンは <code>/proc/&lt;pid&gt;/environ</code> 経由で読み取られる可能性がある</li>
+        <li><strong>ファイルへのキャッシュ禁止</strong>: トークンをディスク上のファイルにキャッシュすることは強く推奨されない。他のプロセスやユーザーからアクセスされるリスクがある</li>
+        <li><strong>有効期限の管理</strong>: トークンの <code>expires_on</code> フィールドを監視し、有効期限が近づいたら再取得する仕組みを実装する</li>
+      </ul>
+
+      <p><a href="codex-azure-vm-offline-setup.html">Codex導入ガイド</a>で紹介されている <code>.bashrc</code> 関数方式では、codexコマンドの実行ごとにトークンを取得するため、キャッシュに起因するリスクは最小限に抑えられている。</p>
+
+      <h2 id="noproxy-importance">--noproxy フラグの重要性</h2>
+
+      <p>企業のAzure VM環境では、HTTP/HTTPSプロキシが設定されていることが多い。<code>http_proxy</code> や <code>https_proxy</code> 環境変数が設定されている場合、curlはデフォルトでプロキシ経由で通信を行う。しかし、IMDSのリンクローカルアドレス（169.254.169.254）はプロキシ経由で到達できないため、アクセスが失敗する。</p>
+
+      <pre><code># プロキシ環境下でのIMDSアクセス（失敗する例）
+curl -H "Metadata: true" \
+  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&amp;resource=https://cognitiveservices.azure.com"
+
+# --noproxy フラグを使用（正しい方法）
+curl --noproxy "*" -H "Metadata: true" \
+  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&amp;resource=https://cognitiveservices.azure.com"</code></pre>
+
+      <p>恒久的な対策として、<code>no_proxy</code> 環境変数にIMDSアドレスを追加しておくことが推奨される。</p>
+
+      <pre><code># .bashrc に追記
+export no_proxy="169.254.169.254,$no_proxy"</code></pre>
+
+      <p>Azure SDKを使用する場合も同様に、HTTPクライアントの設定でプロキシ除外を明示的に指定する必要がある。<a href="codex-overview.html">Codex CLI</a>やその他の<a href="nodejs-offline-install.html">Node.jsベースのツール</a>では、<code>NO_PROXY</code> 環境変数がHTTPライブラリに参照される。</p>
+
+      <h2 id="managed-identity-relation">IMDSとマネージドIDの関係</h2>
+
+      <p><a href="azure-managed-identity.html">Azure マネージドID</a>は、Azure リソースに対して自動的に管理されるIDを提供する機能であり、IMDSはそのトークン取得メカニズムの基盤として機能する。</p>
+
+      <h3 id="token-flow">トークン取得フロー</h3>
+
+      <ol>
+        <li>VM内のアプリケーションがIMDSの <code>/metadata/identity/oauth2/token</code> エンドポイントにリクエストを送信</li>
+        <li>IMDSはAzureファブリックコントローラーを通じてMicrosoft Entra ID（旧Azure AD）にトークンを要求</li>
+        <li>Microsoft Entra IDがマネージドIDの資格情報を検証し、OAuthトークンを発行</li>
+        <li>IMDSがトークンをVM内のアプリケーションに返却</li>
+      </ol>
+
+      <p>この仕組みにより、アプリケーションはシークレットやAPIキーを保持する必要がなく、<a href="azure-vm-security-best-practices.html">VMのセキュリティ</a>が大幅に向上する。<a href="scp-transfer-techniques.html">SCP</a>でオフラインVM にソフトウェアを配布する場合にも、認証情報の転送が不要となる利点がある。</p>
+
+      <h3 id="system-vs-user">システム割り当てとユーザー割り当て</h3>
+
+      <ul>
+        <li><strong>システム割り当てマネージドID</strong>: VMのライフサイクルに紐付く。VMを削除するとIDも自動削除される。1つのVMに1つのみ</li>
+        <li><strong>ユーザー割り当てマネージドID</strong>: 独立したAzureリソースとして作成。複数のVMで共有可能。VMを削除してもIDは残る</li>
+      </ul>
+
+      <p>ユーザー割り当てマネージドIDを使用する場合、IMDSへのトークンリクエストに <code>client_id</code> パラメータを追加する必要がある。</p>
+
+      <pre><code># ユーザー割り当てマネージドIDの場合
+curl --noproxy "*" -fsS -H "Metadata: true" \
+  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&amp;resource=https://cognitiveservices.azure.com&amp;client_id=&lt;USER_ASSIGNED_CLIENT_ID&gt;"</code></pre>
+
+      <h2 id="best-practices">セキュリティベストプラクティス</h2>
+
+      <p>Azure VMでIMDSおよびマネージドIDを安全に運用するための推奨事項を以下にまとめる。</p>
+
+      <ol>
+        <li><strong>最小権限の原則を徹底する</strong>: マネージドIDに付与するRBACロールは必要最小限とする。「所有者」や「共同作成者」などの広範なロールは避ける</li>
+        <li><strong><a href="azure-network-security.html">ネットワークセキュリティ</a>を強化する</strong>: NSGルールでVM からのアウトバウンド通信を必要なエンドポイントのみに制限する</li>
+        <li><strong>アプリケーションの入力検証を厳格にする</strong>: ユーザー入力に基づくHTTPリクエストを行う場合、宛先IPアドレスを検証しリンクローカルアドレスへのアクセスを禁止する</li>
+        <li><strong>トークンのライフサイクルを管理する</strong>: トークンは必要な時に取得し、メモリ上でのみ保持し、不要になったら速やかに破棄する</li>
+        <li><strong>IMDSアクセスログを監視する</strong>: Azure Monitorと連携してIMDSへの異常なアクセスパターンを検知する</li>
+        <li><strong>iptablesでIMDSアクセスを制限する</strong>: VM内で特定のユーザー／プロセスのみがIMDSにアクセスできるようiptablesルールを設定する</li>
+        <li><strong><code>no_proxy</code> を適切に設定する</strong>: プロキシ環境下でのIMDSアクセス問題を防止する</li>
+        <li><strong>定期的なセキュリティレビュー</strong>: <a href="azure-vm-security-best-practices.html">Azure VMのセキュリティベストプラクティス</a>に沿って定期的に構成を見直す</li>
+      </ol>
+
+    </main>
+
+    <aside class="wiki-sidebar">
+      <div class="toc">
+        <div class="toc-title">目次</div>
+        <ul class="toc-list">
+          <li><a href="#what-is-imds">IMDSとは</a></li>
+          <li class="toc-h3"><a href="#imds-endpoint">169.254.169.254 エンドポイント</a></li>
+          <li class="toc-h3"><a href="#metadata-header">Metadata: true ヘッダーの必要性</a></li>
+          <li><a href="#imds-architecture">IMDSアーキテクチャ</a></li>
+          <li><a href="#ssrf-attack-vectors">SSRF攻撃ベクトルと防止策</a></li>
+          <li class="toc-h3"><a href="#ssrf-scenarios">代表的な攻撃シナリオ</a></li>
+          <li class="toc-h3"><a href="#ssrf-prevention">防止策</a></li>
+          <li><a href="#token-caching">トークンキャッシュの考慮事項</a></li>
+          <li class="toc-h3"><a href="#caching-benefits">キャッシュのメリット</a></li>
+          <li class="toc-h3"><a href="#caching-risks">キャッシュのリスク</a></li>
+          <li><a href="#noproxy-importance">--noproxy フラグの重要性</a></li>
+          <li><a href="#managed-identity-relation">IMDSとマネージドIDの関係</a></li>
+          <li class="toc-h3"><a href="#token-flow">トークン取得フロー</a></li>
+          <li class="toc-h3"><a href="#system-vs-user">システム割り当てとユーザー割り当て</a></li>
+          <li><a href="#best-practices">セキュリティベストプラクティス</a></li>
+        </ul>
+      </div>
+
+      <div class="related-articles">
+        <div class="related-title">関連記事</div>
+        <ul class="related-list">
+          <li><a href="codex-azure-vm-offline-setup.html">Azure VMへのCodex導入ガイド（オフライン環境）</a></li>
+          <li><a href="azure-managed-identity.html">Azure マネージドID</a></li>
+          <li><a href="codex-overview.html">OpenAI Codex CLI概要</a></li>
+          <li><a href="azure-network-security.html">Azureネットワークセキュリティ</a></li>
+          <li><a href="ssrf-prevention.html">SSRF攻撃の防止</a></li>
+          <li><a href="azure-vm-security-best-practices.html">Azure VMセキュリティベストプラクティス</a></li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="wiki-footer">
+    <div class="footer-links">
+      <h4>リンク先</h4>
+      <ul><li><a href="codex-azure-vm-offline-setup.html">Azure VMへのCodex導入ガイド（オフライン環境）</a></li><li><a href="azure-managed-identity.html">Azure マネージドID</a></li><li><a href="codex-overview.html">OpenAI Codex CLI概要</a></li><li><a href="nodejs-offline-install.html">Node.jsオフラインインストール</a></li><li><a href="scp-transfer-techniques.html">SCP転送テクニック</a></li><li><a href="azure-network-security.html">Azureネットワークセキュリティ</a></li><li><a href="ssrf-prevention.html">SSRF攻撃の防止</a></li><li><a href="azure-vm-security-best-practices.html">Azure VMセキュリティベストプラクティス</a></li></ul>
+      <h4>被リンク</h4>
+      <ul><li><a href="codex-azure-vm-offline-setup.html">Azure VMへのCodex導入ガイド（オフライン環境）</a></li></ul>
+    </div>
+    <p style="margin-top:12px;">Auto-Wiki で自動生成</p>
+  </footer>
+</div>
+</body>
+</html>
