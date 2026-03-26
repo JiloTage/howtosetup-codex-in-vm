@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Azure VMへのCodex導入ガイド（オフライン環境） - Auto-Wiki</title>
+  <link rel="stylesheet" href="../assets/css/wiki.css">
+</head>
+<body>
+<div class="wiki-wrapper">
+  <header class="wiki-header">
+    <a href="../index.html" class="site-title">Auto-Wiki</a>
+    <nav>
+      <a href="../index.html">トップ</a>
+      <a href="../index.html#article-list">記事一覧</a>
+      <a href="../index.html#graph">サイトグラフ</a>
+    </nav>
+  </header>
+
+  <div class="breadcrumb">
+    <a href="../index.html">Auto-Wiki</a> &gt; Azure VMへのCodex導入ガイド（オフライン環境）
+  </div>
+
+  <div class="wiki-content">
+    <main class="wiki-main">
+      <h1 class="article-title">Azure VMへのCodex導入ガイド（オフライン環境）</h1>
+      <div class="article-meta">最終更新: 2026-03-26</div>
+      <div class="article-summary">外部インターネット接続のないAzure VM上にOpenAI Codexを導入する手順を解説する。GitHubからのパッケージ取得、SCPによる転送、Azure OpenAI APIへのマネージドID認証を用いた構成方法を網羅する。</div>
+
+      <p><b>Azure VMへのCodex導入ガイド（オフライン環境）</b>は、外部インターネットへの接続が制限されたAzure仮想マシン上に<a href="codex-overview.html">OpenAI Codex CLI</a>を導入するための包括的な手順書である。企業のセキュリティポリシーにより外部通信が遮断された環境では、npmによるパッケージインストールやOpenAIアカウントへの直接ログインが不可能であるため、代替的なアプローチが必要となる。本ガイドでは、ローカル端末でパッケージを取得しSCPで転送する方式と、<a href="azure-managed-identity.html">Azure マネージドID</a>を活用したAPI認証によりこの制約を解決する。</p>
+
+      <h2 id="prerequisites">前提条件</h2>
+
+      <p>導入を開始する前に、以下の環境・要件が満たされていることを確認する。</p>
+
+      <h3 id="prerequisites-local">ローカル端末側の要件</h3>
+      <ul>
+        <li>外部インターネットへの接続が可能であること</li>
+        <li>Git がインストールされていること</li>
+        <li>Node.js（v18以上）と npm がインストールされていること</li>
+        <li>対象VMへのSSHアクセス（SCP転送用）が可能であること</li>
+      </ul>
+
+      <h3 id="prerequisites-vm">Azure VM側の要件</h3>
+      <ul>
+        <li>Node.js（v18以上）がインストール済みであること（オフライン環境のため事前にインストールが必要）</li>
+        <li>Python 3 がインストール済みであること（トークン取得スクリプトで使用）</li>
+        <li><a href="azure-managed-identity.html">マネージドID</a>がVMに割り当て済みであること</li>
+        <li>マネージドIDに対して Azure OpenAI リソースへの「Cognitive Services OpenAI User」ロールが付与されていること</li>
+        <li>Azure OpenAI リソースに適切なモデル（GPT-4等）がデプロイ済みであること</li>
+      </ul>
+
+      <h2 id="architecture">全体構成</h2>
+
+      <p>本導入方式の全体的なアーキテクチャを以下に示す。ローカル端末からパッケージを取得し、SCPでVMに転送した後、マネージドIDによるトークン取得を経てAzure OpenAI APIに接続する構成となっている。</p>
+
+      <div class="diagram-container">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="800" height="420">
+          <defs>
+            <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#36c" />
+            </marker>
+            <marker id="arrowhead-green" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#2a7e3b" />
+            </marker>
+          </defs>
+
+          <!-- ローカル端末 -->
+          <rect x="20" y="40" width="200" height="80" rx="8" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="120" y="72" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202122">ローカル端末</text>
+          <text x="120" y="100" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#54595d">Git / npm / SCP</text>
+
+          <!-- GitHub -->
+          <rect x="20" y="180" width="200" height="60" rx="8" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="120" y="216" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#202122">GitHub (codex リポジトリ)</text>
+
+          <!-- Arrow: GitHub → ローカル -->
+          <line x1="120" y1="180" x2="120" y2="120" stroke="#36c" stroke-width="2" marker-end="url(#arrowhead)"/>
+          <text x="135" y="155" font-family="sans-serif" font-size="10" fill="#36c">git clone + npm pack</text>
+
+          <!-- Azure VM -->
+          <rect x="340" y="40" width="220" height="100" rx="8" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="450" y="68" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#202122">Azure VM</text>
+          <text x="450" y="88" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#54595d">インターネット接続なし</text>
+          <text x="450" y="108" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#54595d">Node.js / Codex CLI</text>
+          <text x="450" y="128" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#54595d">.bashrc (codex関数)</text>
+
+          <!-- Arrow: ローカル → VM (SCP) -->
+          <line x1="220" y1="80" x2="340" y2="80" stroke="#36c" stroke-width="2" marker-end="url(#arrowhead)"/>
+          <text x="280" y="70" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#36c">SCP転送</text>
+
+          <!-- IMDS -->
+          <rect x="340" y="200" width="220" height="60" rx="8" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="450" y="225" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#202122">Azure IMDS</text>
+          <text x="450" y="245" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">169.254.169.254</text>
+
+          <!-- Arrow: VM → IMDS -->
+          <line x1="450" y1="140" x2="450" y2="200" stroke="#2a7e3b" stroke-width="2" marker-end="url(#arrowhead-green)"/>
+          <text x="530" y="175" font-family="sans-serif" font-size="10" fill="#2a7e3b">トークン取得</text>
+
+          <!-- Azure OpenAI -->
+          <rect x="340" y="320" width="220" height="60" rx="8" fill="#f8f9fa" stroke="#a2a9b1" stroke-width="2"/>
+          <text x="450" y="345" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#202122">Azure OpenAI Service</text>
+          <text x="450" y="362" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">プライベートエンドポイント経由</text>
+
+          <!-- Arrow: IMDS → Azure OpenAI -->
+          <line x1="450" y1="260" x2="450" y2="320" stroke="#2a7e3b" stroke-width="2" marker-end="url(#arrowhead-green)"/>
+          <text x="530" y="295" font-family="sans-serif" font-size="10" fill="#2a7e3b">API呼び出し</text>
+
+          <!-- マネージドID ラベル -->
+          <rect x="620" y="200" width="160" height="60" rx="8" fill="#eef3ff" stroke="#36c" stroke-width="1.5" stroke-dasharray="5,3"/>
+          <text x="700" y="225" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#36c">マネージドID認証</text>
+          <text x="700" y="242" text-anchor="middle" font-family="sans-serif" font-size="10" fill="#54595d">OAuthトークン自動取得</text>
+
+          <line x1="620" y1="230" x2="560" y2="230" stroke="#36c" stroke-width="1" stroke-dasharray="4,3"/>
+        </svg>
+        <div class="diagram-caption">図1: オフラインAzure VMにおけるCodex導入・認証アーキテクチャ</div>
+      </div>
+
+      <h2 id="step1-package-preparation">ステップ1: ローカル端末でのパッケージ準備</h2>
+
+      <p>まず、インターネットに接続可能なローカル端末でCodex CLIのパッケージを準備する。</p>
+
+      <h3 id="clone-codex">1-1. Codexリポジトリのクローン</h3>
+
+      <p>GitHubから<a href="codex-overview.html">Codex CLI</a>のリポジトリをクローンする。</p>
+
+      <pre><code>git clone https://github.com/openai/codex.git
+cd codex</code></pre>
+
+      <p>特定のリリースバージョンを使用したい場合はタグを指定する。</p>
+
+      <pre><code>git clone --branch v0.1.0 --depth 1 https://github.com/openai/codex.git</code></pre>
+
+      <h3 id="build-package">1-2. パッケージのビルドとtarball作成</h3>
+
+      <p>依存関係を解決し、転送用のtarballを作成する。</p>
+
+      <pre><code># 依存関係のインストール
+npm install
+
+# ビルド（TypeScriptのコンパイル等）
+npm run build
+
+# tarball作成
+npm pack</code></pre>
+
+      <p>これにより <code>openai-codex-x.x.x.tgz</code> のようなファイルが生成される。依存パッケージも含めて転送する必要があるため、<code>node_modules</code> ディレクトリごとアーカイブする方法も検討する。</p>
+
+      <pre><code># node_modulesを含めたアーカイブ作成（依存関係をすべて含む）
+tar czf codex-full.tar.gz package.json node_modules/ dist/ bin/</code></pre>
+
+      <h2 id="step2-transfer">ステップ2: SCPによるVM転送</h2>
+
+      <p>作成したパッケージを<a href="scp-transfer-techniques.html">SCP</a>を使ってAzure VMに転送する。</p>
+
+      <pre><code># 単一ファイルの転送
+scp codex-full.tar.gz user@vm-hostname:~/
+
+# 踏み台サーバー経由の場合
+scp -o ProxyJump=bastion-host codex-full.tar.gz user@vm-private-ip:~/</code></pre>
+
+      <p>転送後、VMにSSHでログインしファイルの存在を確認する。</p>
+
+      <pre><code>ssh user@vm-hostname
+ls -la ~/codex-full.tar.gz</code></pre>
+
+      <h2 id="step3-install">ステップ3: VM上でのインストール</h2>
+
+      <p>個人ユーザーのホームディレクトリ配下にCodexをインストールする。システムワイドではなくユーザー単位のインストールとするため、<code>$HOME</code> 配下に配置する。</p>
+
+      <h3 id="extract-package">3-1. パッケージの展開</h3>
+
+      <pre><code># インストール先ディレクトリの作成
+mkdir -p ~/.local/lib/codex
+cd ~/.local/lib/codex
+
+# アーカイブの展開
+tar xzf ~/codex-full.tar.gz</code></pre>
+
+      <h3 id="setup-path">3-2. 実行パスの設定</h3>
+
+      <pre><code># ローカルbinディレクトリの作成とシンボリックリンク
+mkdir -p ~/.local/bin
+ln -sf ~/.local/lib/codex/bin/codex.js ~/.local/bin/codex
+
+# PATHに追加（.bashrcに追記）
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc</code></pre>
+
+      <h3 id="verify-install">3-3. インストール確認</h3>
+
+      <pre><code>source ~/.bashrc
+codex --version</code></pre>
+
+      <h2 id="step4-managed-identity">ステップ4: マネージドID認証の設定</h2>
+
+      <p>Azure OpenAI APIへのアクセスには、<a href="azure-managed-identity.html">Azure マネージドID</a>を使用する。これにより、APIキーを静的に保管する必要がなく、セキュリティが向上する。VMに割り当てられたマネージドIDが Azure Instance Metadata Service (IMDS) を通じてOAuthトークンを自動的に取得する仕組みである。</p>
+
+      <h3 id="azure-role-assignment">4-1. Azure側のロール割り当て（事前準備）</h3>
+
+      <p>Azure ポータルまたはAzure CLIで、VMのマネージドIDに対してAzure OpenAIリソースへのアクセス権限を付与する。</p>
+
+      <pre><code># Azure CLIでのロール割り当て例（管理者が実施）
+az role assignment create \
+  --assignee &lt;VM_MANAGED_IDENTITY_PRINCIPAL_ID&gt; \
+  --role "Cognitive Services OpenAI User" \
+  --scope /subscriptions/&lt;SUB_ID&gt;/resourceGroups/&lt;RG&gt;/providers/Microsoft.CognitiveServices/accounts/&lt;ACCOUNT&gt;</code></pre>
+
+      <h3 id="bashrc-function">4-2. .bashrcへのcodex関数の定義</h3>
+
+      <p>以下の関数を <code>~/.bashrc</code> に追加する。この関数は、codexコマンド実行のたびにIMDSからアクセストークンを取得し、環境変数として渡す。</p>
+
+      <pre><code>codex() {
+  local token
+  token="$(
+    curl --noproxy "*" -fsS -H "Metadata: true" \
+      "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&amp;resource=https://cognitiveservices.azure.com" \
+    | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])'
+  )" || return 1
+
+  AZURE_OPENAI_API_KEY="$token" command codex "$@"
+}</code></pre>
+
+      <p>この関数のポイントは以下の通り。</p>
+      <ul>
+        <li><code>curl --noproxy "*"</code>: プロキシ設定を無視してIMDS（リンクローカルアドレス）に直接アクセスする</li>
+        <li><code>-fsS</code>: エラー時にサイレント失敗し、HTTPエラーを検出する</li>
+        <li><code>-H "Metadata: true"</code>: IMDS必須のヘッダー（<a href="azure-imds-security.html">SSRF対策</a>）</li>
+        <li><code>resource=https://cognitiveservices.azure.com</code>: Cognitive Services用のトークンを要求</li>
+        <li><code>python3 -c ...</code>: JSONレスポンスからアクセストークンを抽出</li>
+        <li><code>command codex</code>: 関数自身の再帰呼び出しを防ぎ、実際のcodexバイナリを実行する</li>
+      </ul>
+
+      <h3 id="env-variables">4-3. Azure OpenAI エンドポイントの設定</h3>
+
+      <p>以下の環境変数も <code>~/.bashrc</code> に追加する。</p>
+
+      <pre><code># Azure OpenAI エンドポイント設定
+export OPENAI_API_BASE="https://&lt;your-resource-name&gt;.openai.azure.com"
+export OPENAI_API_TYPE="azure"
+export OPENAI_API_VERSION="2024-02-01"</code></pre>
+
+      <p>設定後、bashrcを再読み込みする。</p>
+
+      <pre><code>source ~/.bashrc</code></pre>
+
+      <h2 id="step5-verification">ステップ5: 動作確認</h2>
+
+      <p>すべての設定が完了したら、動作確認を行う。</p>
+
+      <h3 id="token-verification">5-1. トークン取得の確認</h3>
+
+      <p>まず、マネージドIDによるトークン取得が正常に動作するか単体で確認する。</p>
+
+      <pre><code>curl --noproxy "*" -fsS -H "Metadata: true" \
+  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&amp;resource=https://cognitiveservices.azure.com" \
+  | python3 -c 'import sys,json; t=json.load(sys.stdin); print("Token acquired, expires:", t.get("expires_on", "unknown"))'</code></pre>
+
+      <h3 id="codex-test">5-2. Codex CLIの実行テスト</h3>
+
+      <pre><code># 簡単なプロンプトで動作確認
+codex "Hello, world!"</code></pre>
+
+      <p>正常に応答が返れば導入は完了である。</p>
+
+      <h2 id="troubleshooting">トラブルシューティング</h2>
+
+      <h3 id="ts-token-failure">トークン取得の失敗</h3>
+      <ul>
+        <li><strong>症状</strong>: <code>curl: (7) Failed to connect</code> — IMDSに到達できない</li>
+        <li><strong>原因</strong>: VMにマネージドIDが割り当てられていない、またはネットワーク設定の問題</li>
+        <li><strong>対処</strong>: Azureポータルで「ID」設定を確認し、システム割り当てマネージドIDが「オン」であることを確認する</li>
+      </ul>
+
+      <h3 id="ts-permission-denied">403 Forbidden エラー</h3>
+      <ul>
+        <li><strong>症状</strong>: Azure OpenAI APIから403が返る</li>
+        <li><strong>原因</strong>: マネージドIDに適切なロールが割り当てられていない</li>
+        <li><strong>対処</strong>: 「Cognitive Services OpenAI User」ロールの割り当てを確認する。ロール反映には数分かかる場合がある</li>
+      </ul>
+
+      <h3 id="ts-node-version">Node.jsバージョンの問題</h3>
+      <ul>
+        <li><strong>症状</strong>: <code>SyntaxError: Unexpected token</code> 等のエラー</li>
+        <li><strong>原因</strong>: Node.jsのバージョンが古い</li>
+        <li><strong>対処</strong>: <code>node --version</code> でバージョンを確認し、v18以上であることを確認する。オフライン環境でのNode.jsアップデートについては<a href="nodejs-offline-install.html">Node.jsオフラインインストール</a>を参照</li>
+      </ul>
+
+      <h3 id="ts-proxy">プロキシ関連の問題</h3>
+      <ul>
+        <li><strong>症状</strong>: IMDSへのアクセス時にプロキシ経由で接続しようとしてエラーになる</li>
+        <li><strong>対処</strong>: <code>curl --noproxy "*"</code> のフラグが正しく設定されていることを確認する。また、<code>no_proxy</code> 環境変数に <code>169.254.169.254</code> を追加することも有効</li>
+      </ul>
+
+      <pre><code># .bashrcに追加
+export no_proxy="169.254.169.254,$no_proxy"</code></pre>
+
+    </main>
+
+    <aside class="wiki-sidebar">
+      <div class="toc">
+        <div class="toc-title">目次</div>
+        <ul class="toc-list">
+          <li><a href="#prerequisites">前提条件</a></li>
+          <li class="toc-h3"><a href="#prerequisites-local">ローカル端末側の要件</a></li>
+          <li class="toc-h3"><a href="#prerequisites-vm">Azure VM側の要件</a></li>
+          <li><a href="#architecture">全体構成</a></li>
+          <li><a href="#step1-package-preparation">ステップ1: ローカル端末でのパッケージ準備</a></li>
+          <li class="toc-h3"><a href="#clone-codex">1-1. Codexリポジトリのクローン</a></li>
+          <li class="toc-h3"><a href="#build-package">1-2. パッケージのビルドとtarball作成</a></li>
+          <li><a href="#step2-transfer">ステップ2: SCPによるVM転送</a></li>
+          <li><a href="#step3-install">ステップ3: VM上でのインストール</a></li>
+          <li class="toc-h3"><a href="#extract-package">3-1. パッケージの展開</a></li>
+          <li class="toc-h3"><a href="#setup-path">3-2. 実行パスの設定</a></li>
+          <li class="toc-h3"><a href="#verify-install">3-3. インストール確認</a></li>
+          <li><a href="#step4-managed-identity">ステップ4: マネージドID認証の設定</a></li>
+          <li class="toc-h3"><a href="#azure-role-assignment">4-1. Azure側のロール割り当て</a></li>
+          <li class="toc-h3"><a href="#bashrc-function">4-2. .bashrcへのcodex関数の定義</a></li>
+          <li class="toc-h3"><a href="#env-variables">4-3. Azure OpenAI エンドポイントの設定</a></li>
+          <li><a href="#step5-verification">ステップ5: 動作確認</a></li>
+          <li class="toc-h3"><a href="#token-verification">5-1. トークン取得の確認</a></li>
+          <li class="toc-h3"><a href="#codex-test">5-2. Codex CLIの実行テスト</a></li>
+          <li><a href="#troubleshooting">トラブルシューティング</a></li>
+        </ul>
+      </div>
+
+      <div class="related-articles">
+        <div class="related-title">関連記事</div>
+        <ul class="related-list">
+          <li><a href="codex-overview.html">OpenAI Codex CLI概要</a></li>
+          <li><a href="azure-managed-identity.html">Azure マネージドID</a></li>
+          <li><a href="scp-transfer-techniques.html">SCP転送テクニック</a></li>
+          <li><a href="nodejs-offline-install.html">Node.jsオフラインインストール</a></li>
+          <li><a href="azure-imds-security.html">Azure IMDSとセキュリティ</a></li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="wiki-footer">
+    <div class="footer-links">
+      <h4>リンク先</h4>
+      <ul><li><a href="codex-overview.html">OpenAI Codex CLI概要</a></li><li><a href="azure-managed-identity.html">Azure マネージドID</a></li><li><a href="scp-transfer-techniques.html">SCP転送テクニック</a></li><li><a href="nodejs-offline-install.html">Node.jsオフラインインストール</a></li><li><a href="azure-imds-security.html">Azure IMDSとセキュリティ</a></li></ul>
+      <h4>被リンク</h4>
+      <ul></ul>
+    </div>
+    <p style="margin-top:12px;">Auto-Wiki で自動生成</p>
+  </footer>
+</div>
+</body>
+</html>

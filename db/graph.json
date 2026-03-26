@@ -1,4 +1,12 @@
 {
-  "nodes": [],
+  "nodes": [
+    {
+      "id": "codex-azure-vm-offline-setup",
+      "title": "Azure VMへのCodex導入ガイド（オフライン環境）",
+      "url": "articles/codex-azure-vm-offline-setup.html",
+      "summary": "外部インターネット接続のないAzure VM上にOpenAI Codexを導入する手順を解説する。GitHubからのパッケージ取得、SCPによる転送、Azure OpenAI APIへのマネージドID認証を用いた構成方法を網羅する。",
+      "is_root": false
+    }
+  ],
   "links": []
 }

@@ -1,4 +1,46 @@
 {
-  "queue": [],
-  "history": []
+  "queue": [
+    {
+      "proposed_slug": "nodejs-offline-install",
+      "proposed_title": "Node.jsオフラインインストール",
+      "source_id": "codex-azure-vm-offline-setup",
+      "rationale": "前提条件であるNode.jsのオフライン導入手順",
+      "interestingness_score": 0.75,
+      "status": "queued"
+    },
+    {
+      "proposed_slug": "scp-transfer-techniques",
+      "proposed_title": "SCP転送テクニック",
+      "source_id": "codex-azure-vm-offline-setup",
+      "rationale": "オフライン環境へのファイル転送手法の詳細解説",
+      "interestingness_score": 0.7,
+      "status": "queued"
+    }
+  ],
+  "history": [
+    {
+      "proposed_slug": "codex-overview",
+      "proposed_title": "OpenAI Codex CLI概要",
+      "source_id": "codex-azure-vm-offline-setup",
+      "rationale": "Codex CLIの機能・使い方・バージョン情報などの基礎情報",
+      "interestingness_score": 0.9,
+      "status": "processing"
+    },
+    {
+      "proposed_slug": "azure-managed-identity",
+      "proposed_title": "Azure マネージドID",
+      "source_id": "codex-azure-vm-offline-setup",
+      "rationale": "本導入方式の認証基盤であり、仕組みの詳細解説が有用",
+      "interestingness_score": 0.85,
+      "status": "processing"
+    },
+    {
+      "proposed_slug": "azure-imds-security",
+      "proposed_title": "Azure IMDSとセキュリティ",
+      "source_id": "codex-azure-vm-offline-setup",
+      "rationale": "IMDS経由のトークン取得のセキュリティ考慮事項",
+      "interestingness_score": 0.8,
+      "status": "processing"
+    }
+  ]
 }

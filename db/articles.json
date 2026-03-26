@@ -1,5 +1,24 @@
 {
-  "articles": {},
+  "articles": {
+    "codex-azure-vm-offline-setup": {
+      "id": "codex-azure-vm-offline-setup",
+      "title": "Azure VMへのCodex導入ガイド（オフライン環境）",
+      "filename": "articles/codex-azure-vm-offline-setup.html",
+      "created_at": "2026-03-26T04:12:50.624264+00:00",
+      "updated_at": "2026-03-26T04:12:50.624264+00:00",
+      "links_to": [
+        "codex-overview",
+        "azure-managed-identity",
+        "scp-transfer-techniques",
+        "nodejs-offline-install",
+        "azure-imds-security"
+      ],
+      "linked_from": [],
+      "summary": "外部インターネット接続のないAzure VM上にOpenAI Codexを導入する手順を解説する。GitHubからのパッケージ取得、SCPによる転送、Azure OpenAI APIへのマネージドID認証を用いた構成方法を網羅する。",
+      "expansion_status": "pending",
+      "origin": "root"
+    }
+  },
   "root_id": null,
-  "total_count": 0
+  "total_count": 1
 }
