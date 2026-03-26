@@ -39,6 +39,7 @@
         "azure-ad-authentication"
       ],
       "linked_from": [
+        "codex-azure-vm-offline-setup",
         "codex-overview",
         "azure-imds-security"
       ],
@@ -63,6 +64,8 @@
         "codex-sandbox-mechanism"
       ],
       "linked_from": [
+        "codex-azure-vm-offline-setup",
+        "azure-managed-identity",
         "azure-imds-security"
       ],
       "summary": "OpenAI Codex CLIは、ターミナル上で自然言語の指示をもとにコードの生成・編集・実行を行うオープンソースのコマンドラインエージェントである。本記事ではその機能、アーキテクチャ、対応モデル、主要コマンドおよび活用事例を解説する。",
@@ -86,7 +89,11 @@
         "ssrf-prevention",
         "azure-vm-security-best-practices"
       ],
-      "linked_from": [],
+      "linked_from": [
+        "codex-azure-vm-offline-setup",
+        "azure-managed-identity",
+        "codex-overview"
+      ],
       "summary": "Azure Instance Metadata Service（IMDS）の仕組みとセキュリティ上の考慮事項を解説し、SSRF攻撃の防止策やトークンキャッシュの注意点、マネージドID連携におけるベストプラクティスを示す。",
       "expansion_status": "pending",
       "origin": "expanded",

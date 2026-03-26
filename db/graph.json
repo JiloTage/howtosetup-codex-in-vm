@@ -6,7 +6,77 @@
       "url": "articles/codex-azure-vm-offline-setup.html",
       "summary": "外部インターネット接続のないAzure VM上にOpenAI Codexを導入する手順を解説する。GitHubからのパッケージ取得、SCPによる転送、Azure OpenAI APIへのマネージドID認証を用いた構成方法を網羅する。",
       "is_root": false
+    },
+    {
+      "id": "azure-managed-identity",
+      "title": "Azure マネージドID",
+      "url": "articles/azure-managed-identity.html",
+      "summary": "Azure マネージドIDは、Azure リソースが資格情報を管理せずに Azure AD トークンを取得するための仕組みであり、シークレットレスな認証を実現する。システム割り当て・ユーザー割り当ての違い、IMDS経由のトークン取得、RBAC連携、Azure OpenAI での活用とベストプラクティスを解説する。",
+      "is_root": false
+    },
+    {
+      "id": "codex-overview",
+      "title": "OpenAI Codex CLI概要",
+      "url": "articles/codex-overview.html",
+      "summary": "OpenAI Codex CLIは、ターミナル上で自然言語の指示をもとにコードの生成・編集・実行を行うオープンソースのコマンドラインエージェントである。本記事ではその機能、アーキテクチャ、対応モデル、主要コマンドおよび活用事例を解説する。",
+      "is_root": false
+    },
+    {
+      "id": "azure-imds-security",
+      "title": "Azure IMDSとセキュリティ",
+      "url": "articles/azure-imds-security.html",
+      "summary": "Azure Instance Metadata Service（IMDS）の仕組みとセキュリティ上の考慮事項を解説し、SSRF攻撃の防止策やトークンキャッシュの注意点、マネージドID連携におけるベストプラクティスを示す。",
+      "is_root": false
     }
   ],
-  "links": []
+  "links": [
+    {
+      "source": "codex-azure-vm-offline-setup",
+      "target": "codex-overview"
+    },
+    {
+      "source": "codex-azure-vm-offline-setup",
+      "target": "azure-managed-identity"
+    },
+    {
+      "source": "codex-azure-vm-offline-setup",
+      "target": "azure-imds-security"
+    },
+    {
+      "source": "azure-managed-identity",
+      "target": "codex-azure-vm-offline-setup"
+    },
+    {
+      "source": "azure-managed-identity",
+      "target": "codex-overview"
+    },
+    {
+      "source": "azure-managed-identity",
+      "target": "azure-imds-security"
+    },
+    {
+      "source": "codex-overview",
+      "target": "codex-azure-vm-offline-setup"
+    },
+    {
+      "source": "codex-overview",
+      "target": "azure-managed-identity"
+    },
+    {
+      "source": "codex-overview",
+      "target": "azure-imds-security"
+    },
+    {
+      "source": "azure-imds-security",
+      "target": "codex-azure-vm-offline-setup"
+    },
+    {
+      "source": "azure-imds-security",
+      "target": "azure-managed-identity"
+    },
+    {
+      "source": "azure-imds-security",
+      "target": "codex-overview"
+    }
+  ]
 }
