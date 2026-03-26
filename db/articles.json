@@ -13,12 +13,60 @@
         "nodejs-offline-install",
         "azure-imds-security"
       ],
-      "linked_from": [],
+      "linked_from": [
+        "azure-managed-identity",
+        "codex-overview"
+      ],
       "summary": "外部インターネット接続のないAzure VM上にOpenAI Codexを導入する手順を解説する。GitHubからのパッケージ取得、SCPによる転送、Azure OpenAI APIへのマネージドID認証を用いた構成方法を網羅する。",
       "expansion_status": "pending",
       "origin": "root"
+    },
+    "azure-managed-identity": {
+      "id": "azure-managed-identity",
+      "title": "Azure マネージドID",
+      "filename": "articles/azure-managed-identity.html",
+      "created_at": "2026-03-26T04:17:59.534836+00:00",
+      "updated_at": "2026-03-26T04:18:03.819997+00:00",
+      "links_to": [
+        "codex-azure-vm-offline-setup",
+        "codex-overview",
+        "azure-imds-security",
+        "scp-transfer-techniques",
+        "nodejs-offline-install",
+        "azure-rbac-overview",
+        "azure-key-vault",
+        "azure-ad-authentication"
+      ],
+      "linked_from": [
+        "codex-overview"
+      ],
+      "summary": "Azure マネージドIDは、Azure リソースが資格情報を管理せずに Azure AD トークンを取得するための仕組みであり、シークレットレスな認証を実現する。システム割り当て・ユーザー割り当ての違い、IMDS経由のトークン取得、RBAC連携、Azure OpenAI での活用とベストプラクティスを解説する。",
+      "expansion_status": "pending",
+      "origin": "expanded",
+      "source_id": "codex-azure-vm-offline-setup"
+    },
+    "codex-overview": {
+      "id": "codex-overview",
+      "title": "OpenAI Codex CLI概要",
+      "filename": "articles/codex-overview.html",
+      "created_at": "2026-03-26T04:18:14.647697+00:00",
+      "updated_at": "2026-03-26T04:18:18.117618+00:00",
+      "links_to": [
+        "codex-azure-vm-offline-setup",
+        "azure-managed-identity",
+        "scp-transfer-techniques",
+        "nodejs-offline-install",
+        "azure-imds-security",
+        "codex-cli-prompt-engineering",
+        "codex-sandbox-mechanism"
+      ],
+      "linked_from": [],
+      "summary": "OpenAI Codex CLIは、ターミナル上で自然言語の指示をもとにコードの生成・編集・実行を行うオープンソースのコマンドラインエージェントである。本記事ではその機能、アーキテクチャ、対応モデル、主要コマンドおよび活用事例を解説する。",
+      "expansion_status": "pending",
+      "origin": "expanded",
+      "source_id": "codex-azure-vm-offline-setup"
     }
   },
   "root_id": null,
-  "total_count": 1
+  "total_count": 3
 }

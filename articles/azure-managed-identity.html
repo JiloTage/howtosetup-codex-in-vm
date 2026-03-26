@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Azure マネージドID - Auto-Wiki</title>
+  <link rel="stylesheet" href="../assets/css/wiki.css">
+</head>
+<body>
+<div class="wiki-wrapper">
+  <header class="wiki-header">
+    <a href="../index.html" class="site-title">Auto-Wiki</a>
+    <nav>
+      <a href="../index.html">トップ</a>
+      <a href="../index.html#article-list">記事一覧</a>
+      <a href="../index.html#graph">サイトグラフ</a>
+    </nav>
+  </header>
+
+  <div class="breadcrumb">
+    <a href="../index.html">Auto-Wiki</a> &gt; Azure マネージドID
+  </div>
+
+  <div class="wiki-content">
+    <main class="wiki-main">
+      <h1 class="article-title">Azure マネージドID</h1>
+      <div class="article-meta">最終更新: 2026-03-26</div>
+      <div class="article-summary">Azure マネージドIDは、Azure リソースが資格情報を管理せずに Azure AD トークンを取得するための仕組みであり、シークレットレスな認証を実現する。本記事ではシステム割り当てとユーザー割り当ての違い、IMDS経由のトークン取得フロー、RBAC連携、Azure OpenAI での活用、およびセキュリティ上のベストプラクティスを解説する。</div>
+
+      <p><b>Azure マネージドID</b>（Managed Identity）は、Azure Active Directory（Azure AD）が提供する機能であり、Azure 上のリソースがパスワードやシークレットを保持することなく、他の Azure サービスへ安全に認証するための仕組みである。従来はサービスプリンシパルのクライアントシークレットや証明書を手動で管理する必要があったが、マネージドIDを利用することでこれらの資格情報管理が不要になる。<a href="codex-azure-vm-offline-setup.html">Azure VMへのCodex導入ガイド（オフライン環境）</a>においても、VM から Azure OpenAI API へアクセスする際にマネージドIDを使った認証が推奨される。</p>
+
+      <h2 id="overview">概要と基本概念</h2>
+
+      <p>マネージドIDは Azure AD のサービスプリンシパルの一種であるが、ライフサイクルが Azure リソースに紐づいている点が大きな特徴である。リソースが削除されると対応するマネージドIDも自動的に削除され、孤立した資格情報が残るリスクがない。</p>
+
+      <p>マネージドIDの根幹にあるのは、Azure のインフラストラクチャが自動的にトークンの発行・ローテーションを行うという点である。開発者やオペレーターがシークレットの有効期限を管理したり、ローテーションスクリプトを書いたりする必要がなくなる。これにより、<a href="azure-ad-authentication.html">Azure AD 認証</a>のベストプラクティスに沿ったセキュアな運用が容易になる。</p>
+
+      <h2 id="types">システム割り当てとユーザー割り当て</h2>
+
+      <h3 id="system-assigned">システム割り当てマネージドID</h3>
+
+      <p>システム割り当て（System-assigned）マネージドIDは、Azure リソース（VM、App Service、Functions など）を作成する際に直接有効化する。このIDは当該リソースと1対1で紐づき、リソースの削除時に自動的に削除される。設定が簡単であり、単一リソースが少数のサービスにアクセスする場合に適している。</p>
+
+      <h3 id="user-assigned">ユーザー割り当てマネージドID</h3>
+
+      <p>ユーザー割り当て（User-assigned）マネージドIDは、独立した Azure リソースとして作成され、複数の Azure リソースに関連付けることができる。例えば、複数の VM が同一の Azure Key Vault や Azure OpenAI リソースにアクセスする場合、1つのユーザー割り当てIDを共有することで<a href="azure-rbac-overview.html">RBAC（ロールベースアクセス制御）</a>の管理が簡素化される。リソースの削除時にIDは残存するため、ライフサイクルを独立して管理できる。</p>
+
+      <table style="border-collapse:collapse; width:100%; margin:1em 0;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:2px solid #a2a9b1;">
+            <th style="padding:8px; text-align:left;">特性</th>
+            <th style="padding:8px; text-align:left;">システム割り当て</th>
+            <th style="padding:8px; text-align:left;">ユーザー割り当て</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="border-bottom:1px solid #a2a9b1;">
+            <td style="padding:8px;">ライフサイクル</td>
+            <td style="padding:8px;">リソースと連動</td>
+            <td style="padding:8px;">独立管理</td>
+          </tr>
+          <tr style="border-bottom:1px solid #a2a9b1;">
+            <td style="padding:8px;">共有</td>
+            <td style="padding:8px;">不可（1対1）</td>
+            <td style="padding:8px;">複数リソースで共有可</td>
+          </tr>
+          <tr style="border-bottom:1px solid #a2a9b1;">
+            <td style="padding:8px;">作成方法</td>
+            <td style="padding:8px;">リソース設定で有効化</td>
+            <td style="padding:8px;">独立リソースとして作成</td>
+          </tr>
+          <tr style="border-bottom:1px solid #a2a9b1;">
+            <td style="padding:8px;">適用シナリオ</td>
+            <td style="padding:8px;">単一リソースの単純なアクセス</td>
+            <td style="padding:8px;">複数リソースの統一アクセス管理</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="imds-token-flow">IMDS によるトークン取得フロー</h2>
+
+      <p>マネージドIDのトークン取得は、Azure Instance Metadata Service（<a href="azure-imds-security.html">IMDS</a>）を介して行われる。IMDS は VM 内部からのみアクセス可能なリンクローカルアドレス（169.254.169.254）で動作し、外部ネットワークからのアクセスは不可能である。</p>
+
+      <h3 id="token-acquisition">トークン取得の手順</h3>
+
+      <p>アプリケーションは以下のエンドポイントに HTTP GET リクエストを送信してトークンを取得する：</p>
+
+      <pre><code>GET http://169.254.169.254/metadata/identity/oauth2/token
+  ?api-version=2018-02-01
+  &resource=https://cognitiveservices.azure.com/
+Header: Metadata: true</code></pre>
+
+      <p>レスポンスにはアクセストークン（JWT）、有効期限、リソース情報が含まれる。取得したトークンは Azure OpenAI を含む対象リソースの API 呼び出し時に Bearer トークンとして使用する。</p>
+
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" style="max-width:720px; width:100%; height:auto; margin:1.5em auto; display:block; background:#f8f9fa; border:1px solid #a2a9b1; border-radius:4px; font-family:sans-serif;">
+        <defs>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#36c" />
+          </marker>
+        </defs>
+
+        <!-- Title -->
+        <text x="360" y="30" text-anchor="middle" font-size="15" font-weight="bold" fill="#202122">マネージドID トークン取得フロー</text>
+
+        <!-- App box -->
+        <rect x="30" y="60" width="140" height="50" rx="6" fill="#fff" stroke="#36c" stroke-width="2"/>
+        <text x="100" y="90" text-anchor="middle" font-size="13" fill="#202122">アプリケーション</text>
+
+        <!-- IMDS box -->
+        <rect x="280" y="60" width="140" height="50" rx="6" fill="#fff" stroke="#36c" stroke-width="2"/>
+        <text x="350" y="90" text-anchor="middle" font-size="13" fill="#202122">IMDS</text>
+        <text x="350" y="80" text-anchor="middle" font-size="10" fill="#666">169.254.169.254</text>
+        <text x="350" y="100" text-anchor="middle" font-size="10" fill="#666">（リンクローカル）</text>
+
+        <!-- Azure AD box -->
+        <rect x="540" y="60" width="140" height="50" rx="6" fill="#fff" stroke="#36c" stroke-width="2"/>
+        <text x="610" y="90" text-anchor="middle" font-size="13" fill="#202122">Azure AD</text>
+
+        <!-- Target resource box -->
+        <rect x="540" y="240" width="140" height="50" rx="6" fill="#fff" stroke="#36c" stroke-width="2"/>
+        <text x="610" y="260" text-anchor="middle" font-size="13" fill="#202122">Azure OpenAI</text>
+        <text x="610" y="275" text-anchor="middle" font-size="10" fill="#666">（対象リソース）</text>
+
+        <!-- Step 1: App -> IMDS -->
+        <line x1="170" y1="75" x2="275" y2="75" stroke="#36c" stroke-width="2" marker-end="url(#arrowhead)"/>
+        <text x="222" y="68" text-anchor="middle" font-size="11" fill="#36c">1. トークン要求</text>
+
+        <!-- Step 2: IMDS -> Azure AD -->
+        <line x1="420" y1="75" x2="535" y2="75" stroke="#36c" stroke-width="2" marker-end="url(#arrowhead)"/>
+        <text x="477" y="68" text-anchor="middle" font-size="11" fill="#36c">2. 認証要求</text>
+
+        <!-- Step 3: Azure AD -> IMDS -->
+        <line x1="535" y1="100" x2="420" y2="100" stroke="#36c" stroke-width="2" marker-end="url(#arrowhead)"/>
+        <text x="477" y="120" text-anchor="middle" font-size="11" fill="#36c">3. JWT発行</text>
+
+        <!-- Step 4: IMDS -> App -->
+        <line x1="275" y1="100" x2="170" y2="100" stroke="#36c" stroke-width="2" marker-end="url(#arrowhead)"/>
+        <text x="222" y="120" text-anchor="middle" font-size="11" fill="#36c">4. トークン返却</text>
+
+        <!-- Step 5: App -> Target -->
+        <line x1="100" y1="110" x2="100" y2="265" stroke="#36c" stroke-width="1.5" stroke-dasharray="none"/>
+        <line x1="100" y1="265" x2="535" y2="265" stroke="#36c" stroke-width="2" marker-end="url(#arrowhead)"/>
+        <text x="320" y="255" text-anchor="middle" font-size="11" fill="#36c">5. Bearer トークンで API 呼び出し</text>
+
+        <!-- VM boundary -->
+        <rect x="15" y="45" width="430" height="130" rx="8" fill="none" stroke="#a2a9b1" stroke-width="1.5" stroke-dasharray="6,4"/>
+        <text x="230" y="190" text-anchor="middle" font-size="11" fill="#a2a9b1">Azure VM 内部</text>
+
+        <!-- Note -->
+        <text x="360" y="320" text-anchor="middle" font-size="10" fill="#666">IMDS はリンクローカルアドレスで動作し、VM 外部からはアクセス不可</text>
+      </svg>
+
+      <p>トークンにはキャッシュの有効期限（通常1時間）が含まれており、SDK（Azure Identity ライブラリ）を使用する場合は自動的にキャッシュとリフレッシュが行われる。手動実装の場合は <code>expires_on</code> フィールドを確認し、期限切れ前に再取得する処理を実装する必要がある。</p>
+
+      <h2 id="rbac">ロールの割り当て（RBAC）</h2>
+
+      <p>マネージドIDにアクセス権限を付与するには、<a href="azure-rbac-overview.html">Azure RBAC</a> でロールを割り当てる。マネージドIDはサービスプリンシパルとして扱われるため、通常のユーザーやグループと同様にロール割り当てが可能である。</p>
+
+      <h3 id="rbac-examples">主なロール割り当て例</h3>
+
+      <ul>
+        <li><strong>Cognitive Services OpenAI User</strong> - Azure OpenAI リソースへの推論リクエスト実行</li>
+        <li><strong>Key Vault Secrets User</strong> - <a href="azure-key-vault.html">Azure Key Vault</a> からのシークレット読み取り</li>
+        <li><strong>Storage Blob Data Reader</strong> - Azure Blob Storage からのデータ読み取り</li>
+        <li><strong>Contributor</strong> - リソースグループ内の管理操作（必要最小限に制限すべき）</li>
+      </ul>
+
+      <p>最小権限の原則に従い、必要なリソースに対して必要最小限のロールのみを付与することが重要である。スコープはリソースグループ単位ではなく個別リソース単位に絞ることが推奨される。</p>
+
+      <h2 id="use-cases">Azure OpenAI での活用</h2>
+
+      <p>マネージドIDは、<a href="codex-overview.html">Codex</a> や Azure OpenAI Service と組み合わせて使用する場合に特に有用である。API キーをコードや設定ファイルに埋め込む代わりに、マネージドIDを使った Azure AD 認証でトークンを取得し、API リクエストに使用する。</p>
+
+      <h3 id="openai-setup">設定手順</h3>
+
+      <ol>
+        <li>VM のシステム割り当てマネージドIDを有効化する</li>
+        <li>Azure OpenAI リソースに対して <code>Cognitive Services OpenAI User</code> ロールを割り当てる</li>
+        <li>アプリケーションコードで Azure Identity SDK を使用してトークンを取得する</li>
+        <li>取得したトークンを <code>Authorization: Bearer</code> ヘッダーに設定して API を呼び出す</li>
+      </ol>
+
+      <p>オフライン環境においては、<a href="scp-transfer-techniques.html">SCP によるファイル転送</a>でアプリケーションパッケージを配置し、<a href="nodejs-offline-install.html">Node.js のオフラインインストール</a>後にマネージドIDを用いた認証を設定する流れとなる。VM が Azure AD エンドポイントに到達できる限り、インターネットへの完全な接続は不要である。</p>
+
+      <h2 id="security">セキュリティ上の利点</h2>
+
+      <p>マネージドIDを使用することで、以下のセキュリティリスクを軽減できる：</p>
+
+      <ul>
+        <li><strong>シークレット漏洩の防止</strong> - コードリポジトリ、環境変数、構成ファイルにシークレットが存在しないため、漏洩のリスクがゼロになる</li>
+        <li><strong>資格情報ローテーションの自動化</strong> - Azure プラットフォームが内部的にトークンのローテーションを管理するため、手動のローテーション運用が不要</li>
+        <li><strong>最小権限の原則</strong> - RBAC を通じて細かいスコープでのアクセス制御が可能</li>
+        <li><strong>監査性</strong> - Azure AD のサインインログにマネージドIDのトークン取得が記録され、監査証跡が残る</li>
+        <li><strong>IMDS のセキュリティ</strong> - <a href="azure-imds-security.html">IMDS のセキュリティ</a>により、トークンエンドポイントへのアクセスは VM 内部に限定される</li>
+      </ul>
+
+      <h2 id="best-practices">ベストプラクティス</h2>
+
+      <h3 id="bp-selection">ID の種類の選択</h3>
+
+      <p>単一リソースで完結する場合はシステム割り当て、複数リソースで共有する場合はユーザー割り当てを選択する。迷った場合は、ユーザー割り当ての方が柔軟性が高く、将来の拡張に対応しやすい。</p>
+
+      <h3 id="bp-scope">スコープの最小化</h3>
+
+      <p>ロール割り当てのスコープは可能な限り狭くする。サブスクリプション全体ではなく、リソースグループまたは個別リソースに対して割り当てることが望ましい。</p>
+
+      <h3 id="bp-sdk">SDK の使用</h3>
+
+      <p>Azure Identity SDK（<code>DefaultAzureCredential</code>）を使用することで、トークンのキャッシュ・リフレッシュ・フォールバックが自動化される。IMDS エンドポイントへの直接アクセスは、SDK が利用できない環境でのみ検討する。</p>
+
+      <h3 id="bp-monitoring">モニタリングとアラート</h3>
+
+      <p>Azure AD のサインインログとアクティビティログを定期的に監視し、意図しないトークン取得やロール変更を検知するアラートを設定する。<a href="azure-ad-authentication.html">Azure AD 認証</a>の監視体制を整備することが推奨される。</p>
+
+    </main>
+
+    <aside class="wiki-sidebar">
+      <div class="toc">
+        <div class="toc-title">目次</div>
+        <ul class="toc-list">
+          <li><a href="#overview">概要と基本概念</a></li>
+          <li><a href="#types">システム割り当てとユーザー割り当て</a>
+            <ul>
+              <li><a href="#system-assigned">システム割り当てマネージドID</a></li>
+              <li><a href="#user-assigned">ユーザー割り当てマネージドID</a></li>
+            </ul>
+          </li>
+          <li><a href="#imds-token-flow">IMDS によるトークン取得フロー</a>
+            <ul>
+              <li><a href="#token-acquisition">トークン取得の手順</a></li>
+            </ul>
+          </li>
+          <li><a href="#rbac">ロールの割り当て（RBAC）</a>
+            <ul>
+              <li><a href="#rbac-examples">主なロール割り当て例</a></li>
+            </ul>
+          </li>
+          <li><a href="#use-cases">Azure OpenAI での活用</a>
+            <ul>
+              <li><a href="#openai-setup">設定手順</a></li>
+            </ul>
+          </li>
+          <li><a href="#security">セキュリティ上の利点</a></li>
+          <li><a href="#best-practices">ベストプラクティス</a>
+            <ul>
+              <li><a href="#bp-selection">ID の種類の選択</a></li>
+              <li><a href="#bp-scope">スコープの最小化</a></li>
+              <li><a href="#bp-sdk">SDK の使用</a></li>
+              <li><a href="#bp-monitoring">モニタリングとアラート</a></li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+
+      <div class="related-articles">
+        <div class="related-title">関連記事</div>
+        <ul class="related-list">
+          <li><a href="codex-azure-vm-offline-setup.html">Azure VMへのCodex導入ガイド（オフライン環境）</a></li>
+          <li><a href="codex-overview.html">Codex 概要</a></li>
+          <li><a href="azure-imds-security.html">Azure IMDS セキュリティ</a></li>
+          <li><a href="azure-rbac-overview.html">Azure RBAC 概要</a></li>
+          <li><a href="azure-key-vault.html">Azure Key Vault</a></li>
+          <li><a href="azure-ad-authentication.html">Azure AD 認証</a></li>
+        </ul>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="wiki-footer">
+    <div class="footer-links">
+      <h4>リンク先</h4>
+      <ul>
+        <li><a href="codex-azure-vm-offline-setup.html">Azure VMへのCodex導入ガイド（オフライン環境）</a></li>
+        <li><a href="codex-overview.html">Codex 概要</a></li>
+        <li><a href="azure-imds-security.html">Azure IMDS セキュリティ</a></li>
+        <li><a href="scp-transfer-techniques.html">SCP 転送テクニック</a></li>
+        <li><a href="nodejs-offline-install.html">Node.js オフラインインストール</a></li>
+        <li><a href="azure-rbac-overview.html">Azure RBAC 概要</a></li>
+        <li><a href="azure-key-vault.html">Azure Key Vault</a></li>
+        <li><a href="azure-ad-authentication.html">Azure AD 認証</a></li>
+      </ul>
+      <h4>被リンク</h4>
+      <ul></ul>
+    </div>
+    <p style="margin-top:12px;">Auto-Wiki で自動生成</p>
+  </footer>
+</div>
+</body>
+</html>
